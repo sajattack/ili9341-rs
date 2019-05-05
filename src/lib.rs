@@ -5,27 +5,16 @@ extern crate embedded_hal as hal;
 #[cfg(feature = "graphics")]
 extern crate embedded_graphics;
 
-use hal::blocking::spi;
-use hal::blocking::delay::DelayMs;
-use hal::spi::{Mode, Phase, Polarity};
 use hal::digital::OutputPin;
+use hal::blocking::delay::DelayMs;
 
 use core::iter::IntoIterator;
-use core::fmt::Debug;
 
-/// SPI mode
-pub const MODE: Mode = Mode {
-    polarity: Polarity::IdleLow,
-    phase: Phase::CaptureOnFirstTransition,
-};
+pub mod spi;
+pub mod par8;
 
 const WIDTH: usize = 240;
 const HEIGHT: usize = 320;
-
-#[derive(Debug)]
-pub enum Error<E> {
-    Spi(E),
-}
 
 /// The default orientation is Portrait
 pub enum Orientation {
@@ -33,6 +22,12 @@ pub enum Orientation {
     PortraitFlipped,
     Landscape,
     LandscapeFlipped,
+}
+
+pub trait Interface {
+    fn write_iter<I: IntoIterator<Item = u16>>(&mut self, data: I) -> Result<(), ()>;
+    fn write_raw(&mut self, data: &[u8]) -> Result<(), ()>;
+    fn command(&mut self, cmd: Command, args: &[u8]) -> Result<(), ()>;
 }
 
 /// There are two method for drawing to the screen:
@@ -51,75 +46,89 @@ pub enum Orientation {
 /// - As soon as a pixel is received, an internal counter is incremented,
 ///   and the next word will fill the next pixel (the adjacent on the right, or
 ///   the first of the next row if the row ended)
-pub struct Ili9341<SPI, CS, DC, RESET> {
-    spi: SPI,
-    cs: CS,
-    dc: DC,
+pub struct Ili9341<INTERFACE, RESET> {
+    interface: INTERFACE,
     reset: RESET,
     width: usize,
     height: usize,
 }
 
-impl<E, SPI, CS, DC, RESET> Ili9341<SPI, CS, DC, RESET>
+impl<INTERFACE, RESET> Ili9341<INTERFACE, RESET>
 where
-    SPI: spi::Transfer<u8, Error = E> + spi::Write<u8, Error = E>,
-    CS: OutputPin,
-    DC: OutputPin,
+    INTERFACE: Interface,
     RESET: OutputPin,
 {
     pub fn new<DELAY: DelayMs<u16>>(
-        spi: SPI,
-        cs: CS,
-        dc: DC,
+        interface: INTERFACE,
         reset: RESET,
         delay: &mut DELAY,
-    ) -> Result<Self, Error<E>> {
+    ) -> Result<Self, ()> {
         let mut ili9341 = Ili9341 {
-            spi,
-            cs,
-            dc,
+            interface,
             reset,
             width: WIDTH,
             height: HEIGHT,
         };
 
         ili9341.hard_reset(delay);
-        ili9341.command(Command::SoftwareReset, &[])?;
+        ili9341.interface.command(Command::SoftwareReset, &[])?;
         delay.delay_ms(200);
 
-        ili9341.command(Command::PowerControlA, &[0x39, 0x2c, 0x00, 0x34, 0x02])?;
-        ili9341.command(Command::PowerControlB, &[0x00, 0xc1, 0x30])?;
-        ili9341.command(Command::DriverTimingControlA, &[0x85, 0x00, 0x78])?;
-        ili9341.command(Command::DriverTimingControlB, &[0x00, 0x00])?;
-        ili9341.command(Command::PowerOnSequenceControl, &[0x64, 0x03, 0x12, 0x81])?;
-        ili9341.command(Command::PumpRatioControl, &[0x20])?;
-        ili9341.command(Command::PowerControl1, &[0x23])?;
-        ili9341.command(Command::PowerControl2, &[0x10])?;
-        ili9341.command(Command::VCOMControl1, &[0x3e, 0x28])?;
-        ili9341.command(Command::VCOMControl2, &[0x86])?;
-        ili9341.command(Command::MemoryAccessControl, &[0x48])?;
-        ili9341.command(Command::PixelFormatSet, &[0x55])?;
-        ili9341.command(Command::FrameControlNormal, &[0x00, 0x18])?;
-        ili9341.command(Command::DisplayFunctionControl, &[0x08, 0x82, 0x27])?;
-        ili9341.command(Command::Enable3G, &[0x00])?;
-        ili9341.command(Command::GammaSet, &[0x01])?;
-        ili9341.command(
+        ili9341
+            .interface
+            .command(Command::PowerControlA, &[0x39, 0x2c, 0x00, 0x34, 0x02])?;
+        ili9341
+            .interface
+            .command(Command::PowerControlB, &[0x00, 0xc1, 0x30])?;
+        ili9341
+            .interface
+            .command(Command::DriverTimingControlA, &[0x85, 0x00, 0x78])?;
+        ili9341
+            .interface
+            .command(Command::DriverTimingControlB, &[0x00, 0x00])?;
+        ili9341
+            .interface
+            .command(Command::PowerOnSequenceControl, &[0x64, 0x03, 0x12, 0x81])?;
+        ili9341
+            .interface
+            .command(Command::PumpRatioControl, &[0x20])?;
+        ili9341.interface.command(Command::PowerControl1, &[0x23])?;
+        ili9341.interface.command(Command::PowerControl2, &[0x10])?;
+        ili9341
+            .interface
+            .command(Command::VCOMControl1, &[0x3e, 0x28])?;
+        ili9341.interface.command(Command::VCOMControl2, &[0x86])?;
+        ili9341
+            .interface
+            .command(Command::MemoryAccessControl, &[0x48])?;
+        ili9341
+            .interface
+            .command(Command::PixelFormatSet, &[0x55])?;
+        ili9341
+            .interface
+            .command(Command::FrameControlNormal, &[0x00, 0x18])?;
+        ili9341
+            .interface
+            .command(Command::DisplayFunctionControl, &[0x08, 0x82, 0x27])?;
+        ili9341.interface.command(Command::Enable3G, &[0x00])?;
+        ili9341.interface.command(Command::GammaSet, &[0x01])?;
+        ili9341.interface.command(
             Command::PositiveGammaCorrection,
             &[
                 0x0f, 0x31, 0x2b, 0x0c, 0x0e, 0x08, 0x4e, 0xf1, 0x37, 0x07, 0x10, 0x03, 0x0e, 0x09,
                 0x00,
             ],
         )?;
-        ili9341.command(
+        ili9341.interface.command(
             Command::NegativeGammaCorrection,
             &[
                 0x00, 0x0e, 0x14, 0x03, 0x11, 0x07, 0x31, 0xc1, 0x48, 0x08, 0x0f, 0x0c, 0x31, 0x36,
                 0x0f,
             ],
         )?;
-        ili9341.command(Command::SleepOut, &[])?;
+        ili9341.interface.command(Command::SleepOut, &[])?;
         delay.delay_ms(120);
-        ili9341.command(Command::DisplayOn, &[])?;
+        ili9341.interface.command(Command::DisplayOn, &[])?;
 
         Ok(ili9341)
     }
@@ -135,52 +144,9 @@ where
         self.reset.set_high();
         delay.delay_ms(200);
     }
-    fn command(&mut self, cmd: Command, args: &[u8]) -> Result<(), Error<E>> {
-        self.cs.set_low();
 
-        self.dc.set_low();
-        self.spi.write(&[cmd as u8]).map_err(Error::Spi)?;
-
-        self.dc.set_high();
-        self.spi.write(args).map_err(Error::Spi)?;
-
-        self.cs.set_high();
-        Ok(())
-    }
-    fn write_iter<I: IntoIterator<Item = u16>>(&mut self, data: I) -> Result<(), Error<E>> {
-        self.cs.set_low();
-
-        self.dc.set_low();
-        self.spi
-            .write(&[Command::MemoryWrite as u8])
-            .map_err(Error::Spi)?;
-
-        self.dc.set_high();
-        for d in data.into_iter() {
-            self.spi
-                .write(&[(d >> 8) as u8, (d & 0xff) as u8])
-                .map_err(Error::Spi)?;
-        }
-
-        self.cs.set_high();
-        Ok(())
-    }
-    fn write_raw(&mut self, data: &[u8]) -> Result<(), Error<E>> {
-        self.cs.set_low();
-
-        self.dc.set_low();
-        self.spi
-            .write(&[Command::MemoryWrite as u8])
-            .map_err(Error::Spi)?;
-
-        self.dc.set_high();
-        self.spi.write(data).map_err(Error::Spi)?;
-
-        self.cs.set_high();
-        Ok(())
-    }
-    fn set_window(&mut self, x0: u16, y0: u16, x1: u16, y1: u16) -> Result<(), Error<E>> {
-        self.command(
+    fn set_window(&mut self, x0: u16, y0: u16, x1: u16, y1: u16) -> Result<(),()> {
+        self.interface.command(
             Command::ColumnAddressSet,
             &[
                 (x0 >> 8) as u8,
@@ -189,7 +155,7 @@ where
                 (x1 & 0xff) as u8,
             ],
         )?;
-        self.command(
+        self.interface.command(
             Command::PageAddressSet,
             &[
                 (y0 >> 8) as u8,
@@ -216,9 +182,9 @@ where
         x1: u16,
         y1: u16,
         data: I,
-    ) -> Result<(), Error<E>> {
+    ) -> Result<(), ()> {
         self.set_window(x0, y0, x1, y1)?;
-        self.write_iter(data)
+        self.interface.write_iter(data)
     }
     /// Draw a rectangle on the screen, represented by top-left corner (x0, y0)
     /// and bottom-right corner (x1, y1).
@@ -237,32 +203,36 @@ where
         x1: u16,
         y1: u16,
         data: &[u8],
-    ) -> Result<(), Error<E>> {
+    ) -> Result<(), ()> {
         self.set_window(x0, y0, x1, y1)?;
-        self.write_raw(data)
+        self.interface.write_raw(data)
     }
     /// Change the orientation of the screen
-    pub fn set_orientation(&mut self, mode: Orientation) -> Result<(), Error<E>> {
+    pub fn set_orientation(&mut self, mode: Orientation) -> Result<(), ()> {
         match mode {
             Orientation::Portrait => {
                 self.width = WIDTH;
                 self.height = HEIGHT;
-                self.command(Command::MemoryAccessControl, &[0x40 | 0x08])
+                self.interface
+                    .command(Command::MemoryAccessControl, &[0x40 | 0x08])
             }
             Orientation::Landscape => {
                 self.width = HEIGHT;
                 self.height = WIDTH;
-                self.command(Command::MemoryAccessControl, &[0x20 | 0x08])
+                self.interface
+                    .command(Command::MemoryAccessControl, &[0x20 | 0x08])
             }
             Orientation::PortraitFlipped => {
                 self.width = WIDTH;
                 self.height = HEIGHT;
-                self.command(Command::MemoryAccessControl, &[0x80 | 0x08])
+                self.interface
+                    .command(Command::MemoryAccessControl, &[0x80 | 0x08])
             }
             Orientation::LandscapeFlipped => {
                 self.width = HEIGHT;
                 self.height = WIDTH;
-                self.command(Command::MemoryAccessControl, &[0x40 | 0x80 | 0x20 | 0x08])
+                self.interface
+                    .command(Command::MemoryAccessControl, &[0x40 | 0x80 | 0x20 | 0x08])
             }
         }
     }
@@ -282,13 +252,10 @@ use embedded_graphics::drawable;
 use embedded_graphics::{drawable::Pixel, pixelcolor::PixelColorU16, Drawing};
 
 #[cfg(feature = "graphics")]
-impl<E, SPI, CS, DC, RESET> Drawing<PixelColorU16> for Ili9341<SPI, CS, DC, RESET>
+impl<INTERFACE, RESET> Drawing<PixelColorU16> for Ili9341<INTERFACE, RESET>
 where
-    SPI: spi::Transfer<u8, Error = E> + spi::Write<u8, Error = E>,
-    CS: OutputPin,
-    DC: OutputPin,
+    INTERFACE: Interface,
     RESET: OutputPin,
-    E: Debug,
 {
     fn draw<T>(&mut self, item_pixels: T)
     where
@@ -312,7 +279,7 @@ where
 }
 
 #[derive(Clone, Copy)]
-enum Command {
+pub enum Command {
     SoftwareReset = 0x01,
     PowerControlA = 0xcb,
     PowerControlB = 0xcf,
