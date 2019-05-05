@@ -1,7 +1,6 @@
 use hal::spi::{Mode, Phase, Polarity};
 use hal::blocking::spi;
 use hal::digital::OutputPin;
-use hal::blocking::delay::DelayMs;
 
 use Interface;
 use Command;
@@ -24,17 +23,17 @@ where
     CS: OutputPin,
     DC: OutputPin,
 {
-    pub fn new<DELAY: DelayMs<u16>>(
+    pub fn new(
         spi: SPI,
         cs: CS,
         dc: DC,
-    ) -> Result<Self, ()> {
+    ) -> Self {
         let spi = Spi {
             spi,
             cs,
             dc,
         };
-        Ok(spi)
+        spi
     }
 }
 
